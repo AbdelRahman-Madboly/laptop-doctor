@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#14b8a6"/>
+      <stop offset="1" stop-color="#1e3a8a"/>
+    </linearGradient>
+    <linearGradient id="screen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0b1220"/>
+      <stop offset="1" stop-color="#111c2e"/>
+    </linearGradient>
+  </defs>
+  <rect x="12" y="12" width="232" height="232" rx="56" fill="url(#bg)"/>
+  <rect x="12" y="12" width="232" height="116" rx="56" fill="#ffffff" opacity="0.06"/>
+  <!-- laptop -->
+  <rect x="54" y="66" width="148" height="100" rx="12" fill="url(#screen)" stroke="#e6fffb" stroke-width="7"/>
+  <path d="M36 180 H220 a8 8 0 0 1 -8 12 H44 a8 8 0 0 1 -8 -12 Z" fill="#e6fffb"/>
+  <!-- pulse -->
+  <polyline points="68,118 96,118 108,94 124,142 138,106 148,118 188,118"
+            fill="none" stroke="#2dd4bf" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

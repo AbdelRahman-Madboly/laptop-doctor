@@ -1,9 +1,47 @@
-# laptop-doctor
+# Laptop Doctor
 
-Health checks, crash triage, cleanup and update tracking for the Dell G15 5530 (Ubuntu 24.04).
-Read-only by default. Root-level fixes are printed for you to run, never run automatically.
+Health checks, live system monitor, cleanup, crash triage, update tracking and daily reports for the
+Dell G15 5530 (Ubuntu 24.04). A desktop app that lives in the tray and keeps checking in the
+background, plus the `laptop` command for the terminal.
+
+Read-only by default. The only things it changes are user-level caches you tick on the Optimize page
+(or `laptop clean --apply`) and processes you end from the Monitor page. Root-level fixes are shown
+as commands for you to run, never run for you.
+
+## Install
 
 ```
+packaging/install.sh           # app grid entry, desktop icon, start in the tray at login, `laptop` on PATH
+packaging/install.sh --remove  # undo (settings and reports are kept)
+```
+
+Needs `uv`. On X11 Qt needs `libxcb-cursor0`; if it is missing the installer fetches a private copy
+into `.venv/extra-lib` without root (the system-wide fix is `sudo apt install libxcb-cursor0`). The
+tray icon uses the AppIndicator extension that Ubuntu ships enabled.
+
+## The app
+
+| Page | What it shows |
+|---|---|
+| Overview | health score, what needs attention with the fix, live CPU/RAM/GPU/temp/disk/battery tiles, network, score trend |
+| Monitor | CPU history and per-thread bars, RAM and swap, NVIDIA load/VRAM/power, disk and network rates, temperatures, process table with End task / Force kill |
+| Health | every check as a card: status, finding, copyable fix |
+| Optimize | reclaimable space (safe to clear / review by hand / needs sudo), largest folders in home, memory hogs |
+| Crashes | boots, crash reports, OOM kills, GPU Xid, lockups, previous-boot errors, segfaults (1 to 30 days) |
+| Updates | apt, snap, flatpak, toolchains, npm globals |
+| Device | model, BIOS, OS, CPU, RAM, GPUs, battery wear, disks and partitions, network interfaces |
+| Reports | the daily Markdown reports, rendered; generate one now |
+| Settings | start at login, close to tray, check interval, notifications, daily report, dark/light |
+
+Closing the window keeps it in the tray. The tray icon's dot is green, amber or red for the last
+check; its menu has run check, quick clean, write report and quit. A notification appears only when
+a check gets worse than on the previous run. Shortcuts: `Ctrl+1`..`Ctrl+9` pages, `Ctrl+R` run
+checks, `Ctrl+Q` quit.
+
+## Terminal
+
+```
+laptop                  open the dashboard (laptop gui --background starts in the tray)
 laptop check            one-screen OK/WARN/FAIL summary
 laptop crashes [days]   boots, crash files, OOM kills, GPU Xid, lockups, previous-boot errors
 laptop clean [--apply]  reclaimable space; --apply clears safe user caches and idle Gradle/Kotlin daemons
@@ -12,10 +50,27 @@ laptop report [--notify] writes reports/YYYY-MM-DD.md (last 30 kept, not committ
 laptop snapshot         full software inventory (machine-notes/scan.sh)
 ```
 
-`systemd/laptop-doctor.timer` (installed to `~/.config/systemd/user/`) runs `laptop report --notify`
-at 09:30 and 5 minutes after login; a desktop notification appears when anything is WARN or FAIL.
+`systemd/laptop-doctor.timer` (installed to `~/.config/systemd/user/`) still runs
+`laptop report --notify` at 09:30 and 5 minutes after login, so reports keep coming when the app is
+not running. When the tray app is up it skips its own notification to avoid doubles.
 
-The machine record (current state, numbered issues, changelog, reinstall playbook) lives in
-`~/machine-notes/`.
+## Layout
 
+```
+laptop_doctor/
+  checks.py    the health checks and thresholds
+  metrics.py   live sampler and process list
+  sysinfo.py   device facts
+  cleanup.py   reclaimable space and the safe cleanup
+  triage.py    crash triage and update listing
+  report.py    Markdown reports, check history, notifications
+  cli.py       the `laptop` command
+  ui/          PySide6 app: app.py (window + tray), state.py, widgets.py, theme.py, pages/
+assets/        app and tray icons (SVG)
+packaging/     install.sh, icon renderer
+tests/         uv run pytest
+```
+
+Settings and check history live in `~/.config/laptop-doctor/`. The machine record (current state,
+numbered issues, changelog, reinstall playbook) lives in `~/machine-notes/`.
 `known-ports`: services that are meant to listen on all interfaces.
