@@ -1,0 +1,8 @@
+[Unit]
+Description=Laptop doctor daily health report
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
+ExecStart=%h/laptop-doctor/bin/laptop report --notify

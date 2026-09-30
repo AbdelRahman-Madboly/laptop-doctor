@@ -1,0 +1,281 @@
+#!/usr/bin/env bash
+# laptop: health checks, crash triage, cleanup and update listing for this machine.
+# Read-only unless a command says otherwise. Root-level fixes are printed, never run.
+set -uo pipefail
+
+REPO="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+MACHINE_DOCS="$HOME/machine-notes"
+REPORTS="$REPO/reports"
+
+# thresholds
+DISK_WARN=85; DISK_FAIL=93
+SWAP_WARN_MB=6000
+TEMP_WARN=90
+BATTERY_WARN=70
+
+WARN=0; FAIL=0
+ok()   { printf 'OK    %-10s %s\n' "$1" "$2"; }
+warn() { printf 'WARN  %-10s %s\n' "$1" "$2"; WARN=$((WARN + 1)); }
+fail() { printf 'FAIL  %-10s %s\n' "$1" "$2"; FAIL=$((FAIL + 1)); }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+usage() {
+  cat <<EOF
+laptop <command>
+
+  check           health summary (disk, memory, GPU, reboot, units, errors, crashes, backups, network, battery, temps)
+  crashes [days]  crash and error triage for the last N days (default 7)
+  clean           show what can be reclaimed; 'clean --apply' clears safe user-level caches only
+  updates         list pending updates across apt, snap, flatpak, toolchains
+  report          write check + crashes to reports/YYYY-MM-DD.md; '--notify' pops a desktop notice on problems
+  snapshot        run the full software inventory scan (machine-notes/scan.sh)
+EOF
+}
+
+# ---------------------------------------------------------------- check
+check_disk() {
+  local pct avail
+  read -r pct avail < <(df --output=pcent,avail -BG / | tail -1 | tr -d '%G')
+  local msg="/ ${pct}% used, ${avail}G free"
+  if (( pct >= DISK_FAIL )); then fail disk "$msg"; elif (( pct >= DISK_WARN )); then warn disk "$msg (run: laptop clean)"; else ok disk "$msg"; fi
+}
+
+check_memory() {
+  local avail swap_used
+  avail=$(free -m | awk '/^Mem:/{print $7}')
+  swap_used=$(free -m | awk '/^Swap:/{print $3}')
+  local top; top=$(ps -eo rss,comm --sort=-rss | awk 'NR>1 && NR<5 {printf "%s %.1fG, ", $2, $1/1048576}')
+  local msg="${avail}M available, swap ${swap_used}M used; top: ${top%, }"
+  if (( swap_used > SWAP_WARN_MB )); then warn memory "$msg"; else ok memory "$msg"; fi
+}
+
+check_gpu() {
+  have nvidia-smi || { warn gpu "nvidia-smi not found"; return; }
+  local out; out=$(nvidia-smi --query-gpu=name,driver_version,temperature.gpu --format=csv,noheader 2>&1)
+  if grep -qi 'mismatch' <<<"$out"; then
+    fail gpu "driver/library mismatch: reboot needed before CUDA works"
+  elif grep -qiE 'failed|error' <<<"$out"; then
+    fail gpu "$out"
+  else
+    ok gpu "$out"
+  fi
+}
+
+check_reboot() {
+  if [[ -f /var/run/reboot-required ]]; then
+    local pkgs; pkgs=$(sort -u /var/run/reboot-required.pkgs 2>/dev/null | head -5 | tr '\n' ' ')
+    warn reboot "pending since $(date -r /var/run/reboot-required +%F) for: ${pkgs}"
+  else
+    ok reboot "not required; up $(uptime -p | sed 's/^up //')"
+  fi
+}
+
+check_units() {
+  local sys usr
+  sys=$(systemctl --failed --no-legend --plain 2>/dev/null | awk '{print $1}' | tr '\n' ' ')
+  usr=$(systemctl --user --failed --no-legend --plain 2>/dev/null | awk '$1 !~ /^vte-spawn-.*\.scope$/ {print $1}' | tr '\n' ' ')
+  if [[ -n "$sys$usr" ]]; then
+    if [[ -z "$usr" && -z "$(tr ' ' '\n' <<<"$sys" | grep -v '\.mount$')" ]]; then warn units "stale mount units: ${sys}(clear: sudo systemctl reset-failed)"
+    else fail units "failed: ${sys}${usr:+(user) $usr}"; fi
+  else ok units "no failed system or user units"; fi
+}
+
+check_errors() {
+  local n top
+  n=$(journalctl -p 3 -b --no-pager -q 2>/dev/null | wc -l)
+  top=$(journalctl -p 3 -b --no-pager -q -o short 2>/dev/null | awk '{sub(/\[.*/,"",$5); print $5}' | sort | uniq -c | sort -rn | head -4 | awk '{printf "%s(%s) ", $2, $1}')
+  local usb; usb=$(journalctl -k -p 3 -b --no-pager -q 2>/dev/null | grep -c 'error -71\|unable to enumerate USB')
+  (( usb > 10 )) && top="$top; ${usb} USB enumeration errors (bad cable/device or port)"
+  if (( n > 200 )); then warn errors "$n error-level journal lines this boot; top: $top"; else ok errors "$n error-level journal lines this boot; top: ${top:-none}"; fi
+}
+
+check_crashes() {
+  local unclean crash_files oom
+  unclean=$(last -x 2>/dev/null | awk '/^reboot/ && /still running|crash/' | tail -n +2 | wc -l)
+  crash_files=$(find /var/crash -name '*.crash' -mtime -7 2>/dev/null | wc -l)
+  oom=$(journalctl -k --since -7d --no-pager -q 2>/dev/null | grep -c 'Killed process')
+  local msg="last 7d: ${crash_files} crash report(s), ${oom} OOM kill(s); unclean boots in wtmp: ${unclean}"
+  if (( crash_files + oom > 0 )); then warn crashes "$msg (run: laptop crashes)"; else ok crashes "$msg"; fi
+}
+
+check_backups() {
+  local result last
+  result=$(systemctl --user show nightly-backup.service -p Result --value 2>/dev/null)
+  last=$(systemctl --user show nightly-backup.service -p ExecMainExitTimestamp --value 2>/dev/null)
+  if [[ -z "$last" ]]; then warn backups "nightly-backup has not run since login"
+  elif [[ "$result" != "success" ]]; then fail backups "nightly-backup last result: $result ($last)"
+  else ok backups "nightly-backup ok ($last)"; fi
+}
+
+check_network() {
+  local exposed
+  local known; known=$(grep -oE '^[0-9]+' "$REPO/known-ports" 2>/dev/null | tr '\n' '|')
+  exposed=$(ss -Htlnp 2>/dev/null | awk '$4 ~ /^(0\.0\.0\.0|\*|\[::\]):/ {split($4,a,":"); print a[length(a)]}' | sort -un | grep -vxE "${known%|}" | tr '\n' ' ')
+  if [[ -n "$exposed" ]]; then warn network "listening on all interfaces, ports: $exposed(review them)"; else ok network "no services on 0.0.0.0"; fi
+}
+
+check_battery() {
+  local b=/sys/class/power_supply/BAT0 full design kind=energy
+  [[ -r $b/charge_full ]] && kind=charge
+  [[ -r $b/${kind}_full ]] || return 0
+  full=$(cat $b/${kind}_full); design=$(cat $b/${kind}_full_design)
+  local health=$(( full * 100 / design ))
+  local msg="health ${health}%, $(cat $b/cycle_count 2>/dev/null || echo '?') cycles ($(cat $b/status), $(cat $b/capacity)% charge)"
+  if (( health < BATTERY_WARN )); then warn battery "$msg"; else ok battery "$msg"; fi
+}
+
+check_temps() {
+  have sensors || return 0
+  local pkg; pkg=$(sensors 2>/dev/null | awk '/^Package id 0:/{gsub(/[+°C]/,"",$4); print int($4)}')
+  [[ -n "$pkg" ]] || return 0
+  if (( pkg >= TEMP_WARN )); then warn temps "CPU package ${pkg}C"; else ok temps "CPU package ${pkg}C"; fi
+}
+
+check_updates_summary() {
+  local apt snap
+  apt=$(apt list --upgradable 2>/dev/null | grep -c upgradable)
+  snap=$(snap refresh --list 2>/dev/null | tail -n +2 | wc -l)
+  local msg="apt ${apt}, snap ${snap} pending (details: laptop updates)"
+  if (( apt > 30 )); then warn updates "$msg"; else ok updates "$msg"; fi
+}
+
+cmd_check() {
+  echo "laptop check  $(date '+%F %T')  $(hostname)  kernel $(uname -r)"
+  check_disk; check_memory; check_gpu; check_reboot; check_units; check_errors
+  check_crashes; check_backups; check_network; check_battery; check_temps; check_updates_summary
+  echo "---- ${FAIL} fail, ${WARN} warn"
+}
+
+# ---------------------------------------------------------------- crashes
+cmd_crashes() {
+  local days="${1:-7}"
+  echo "## Boots (last 10; a reboot line with 'crash' or a gap without shutdown means an unclean stop)"
+  last -x -n 20 2>/dev/null | grep -E '^(reboot|shutdown)' | head -10
+  echo
+  echo "## Crash reports in /var/crash (last ${days}d)"
+  find /var/crash -name '*.crash' -mtime "-$days" -printf '%TY-%Tm-%Td %TH:%TM  %f\n' 2>/dev/null | sort -r || true
+  echo
+  echo "## Kernel: errors, OOM, GPU Xid, hung tasks, soft lockups (last ${days}d)"
+  journalctl -k --since "-${days}d" --no-pager -q -o short 2>/dev/null \
+    | grep -Ei 'out of memory|oom-kill|NVRM: Xid|hung_task|soft lockup|BUG:|Oops|segfault|I/O error|nvme.*(timeout|reset)' | tail -25
+  echo
+  echo "## Previous boot: last error-level lines (what happened before the last stop)"
+  journalctl -b -1 -p 3 --no-pager -q -o short 2>/dev/null | tail -15
+  echo
+  echo "## Application segfaults and core dumps (last ${days}d)"
+  journalctl --since "-${days}d" --no-pager -q -o short 2>/dev/null | grep -Ei 'segfault|core dumped|dumped core' | tail -15
+  echo
+  echo "## pstore (kernel panic dumps kept across reboot)"
+  ls -la /sys/fs/pstore 2>/dev/null | tail -n +4 || echo "not readable"
+  echo
+  echo "## User services that failed recently"
+  journalctl --user --since "-${days}d" --no-pager -q -o short 2>/dev/null | grep -E 'Failed with result|failed' | tail -10
+}
+
+# ---------------------------------------------------------------- clean
+size() { du -sh "$1" 2>/dev/null | cut -f1; }
+
+stale_plugin_versions() {
+  # plugin cache dirs not referenced by installed_plugins.json
+  /usr/bin/python3 - <<'EOF'
+import json, pathlib
+home = pathlib.Path.home() / ".assistant/plugins"
+keep = {pathlib.Path(e["installPath"]).resolve()
+        for v in json.loads((home / "installed_plugins.json").read_text())["plugins"].values() for e in v}
+for market in (home / "cache").iterdir():
+    for plugin in market.iterdir():
+        for version in plugin.iterdir():
+            if version.is_dir() and version.resolve() not in keep:
+                print(version)
+EOF
+}
+
+cmd_clean() {
+  local apply="${1:-}"
+  echo "## User-level (safe; 'laptop clean --apply' clears these)"
+  printf '  %-34s %s\n' "thumbnails ~/.cache/thumbnails" "$(size ~/.cache/thumbnails)"
+  printf '  %-34s %s\n' "pip cache" "$(size ~/.cache/pip)"
+  printf '  %-34s %s\n' "npm cache" "$(size ~/.npm/_cacache)"
+  printf '  %-34s %s\n' "idle Gradle/Kotlin daemons (swap)" "$(for p in $(pgrep -f '^[^ ]*java .*(GradleDaemon|KotlinCompileDaemon)'); do awk '/VmSwap/{s+=$2} END{print s}' /proc/$p/status; done | awk '{s+=$1} END{printf "%.1fG", s/1048576}')"
+  printf '  %-34s %s\n' "old Assistant plugin versions" "$(stale_plugin_versions | xargs -r du -sch 2>/dev/null | tail -1 | cut -f1)"
+  have docker && printf '  %-34s %s\n' "docker dangling images+build cache" "$(docker system df --format '{{.Type}} {{.Reclaimable}}' 2>/dev/null | grep -E 'Images|Build' | tr '\n' ' ')"
+  echo
+  echo "## Review by hand (not cleared automatically)"
+  printf '  %-34s %s\n' "Trash" "$(size ~/.local/share/Trash)"
+  printf '  %-34s %s\n' "Downloads" "$(size ~/Downloads)"
+  printf '  %-34s %s\n' "HuggingFace models" "$(size ~/.cache/huggingface)"
+  printf '  %-34s %s\n' "conda pkgs (conda clean --all)" "$(size ~/miniconda3/pkgs)"
+  printf '  %-34s %s\n' "local-llm models" "$(size ~/.local-models)"
+  printf '  %-34s %s\n' "Assistant session transcripts" "$(size ~/.assistant/projects)"
+  echo "  largest dirs in home:"
+  du -xh --max-depth=1 ~ 2>/dev/null | sort -rh | sed -n '2,8p' | sed 's/^/    /'
+  echo
+  echo "## Needs sudo (run yourself with: ! <command>)"
+  echo "  sudo apt autoremove --purge && sudo apt clean          # apt cache $(size /var/cache/apt/archives)"
+  echo "  sudo journalctl --vacuum-size=300M                     # journal $(journalctl --disk-usage 2>/dev/null | grep -oE '[0-9.]+[GM]')"
+  local disabled; disabled=$(snap list --all 2>/dev/null | awk '/disabled/' | wc -l)
+  (( disabled > 0 )) && echo "  snap list --all | awk '/disabled/{print \$1, \$3}' | while read n r; do sudo snap remove \"\$n\" --revision=\"\$r\"; done   # ${disabled} old revisions"
+
+  if [[ "$apply" == "--apply" ]]; then
+    echo
+    echo "## Applying user-level cleanup"
+    pkill -TERM -f '^[^ ]*java .*(GradleDaemon|KotlinCompileDaemon)'; echo "  idle Gradle/Kotlin daemons stopped (they restart on the next build)"
+    rm -rf ~/.cache/thumbnails/* && echo "  thumbnails cleared"
+    have pip && pip cache purge -q >/dev/null 2>&1 && echo "  pip cache purged"
+    have npm && npm cache clean --force >/dev/null 2>&1 && echo "  npm cache cleaned"
+    stale_plugin_versions | while read -r d; do rm -rf "$d"; done && echo "  old plugin versions removed"
+    have docker && docker image prune -f >/dev/null && docker builder prune -f >/dev/null && echo "  docker dangling images and build cache pruned"
+    echo "  disk now: $(df -h --output=pcent,avail / | tail -1)"
+  fi
+}
+
+# ---------------------------------------------------------------- updates
+cmd_updates() {
+  echo "## apt ($(apt list --upgradable 2>/dev/null | grep -c upgradable) pending; cache as of $(date -r /var/lib/apt/periodic/update-success-stamp +%F 2>/dev/null || echo unknown))"
+  apt list --upgradable 2>/dev/null | grep upgradable | cut -d/ -f1 | head -30 | tr '\n' ' '; echo
+  echo "  apply: sudo apt update && sudo apt full-upgrade   (watch nvidia-* and linux-* lines: check driver and kernel notes first)"
+  echo
+  echo "## snap"; snap refresh --list 2>&1 | sed 's/^/  /'
+  have flatpak && { echo "## flatpak"; flatpak remote-ls --updates 2>/dev/null | sed 's/^/  /'; }
+  echo
+  echo "## Toolchains"
+  printf '  %-10s %s\n' assistant "$(assistant --version 2>/dev/null | head -1) (auto-updates)"
+  printf '  %-10s %s\n' node "$(node --version 2>/dev/null) via nvm; ~/.local/bin links to it"
+  printf '  %-10s %s\n' fvm "$(fvm --version 2>/dev/null | head -1); Flutter pinned per project"
+  printf '  %-10s %s\n' gh "$(gh --version 2>/dev/null | head -1)"
+  printf '  %-10s %s\n' docker "$(docker --version 2>/dev/null)"
+  printf '  %-10s %s\n' gitleaks "$(~/bin/gitleaks version 2>/dev/null)"
+  printf '  %-10s %s\n' trivy "$(~/bin/trivy --version 2>/dev/null | head -1)"
+  printf '  %-10s %s\n' local-llm "$(local-llm --version 2>/dev/null | tail -1)"
+  echo
+  echo "## npm globals outdated"
+  npm outdated -g --depth=0 2>/dev/null | sed 's/^/  /' || true
+}
+
+# ---------------------------------------------------------------- report
+cmd_report() {
+  mkdir -p "$REPORTS"
+  local out="$REPORTS/$(date +%F).md" summary
+  {
+    echo "# Laptop report $(date '+%F %T')"
+    echo; echo '```'; cmd_check; echo '```'
+    echo; echo "# Crash and error triage (7 days)"; echo; echo '```'; cmd_crashes 7; echo '```'
+  } > "$out" 2>&1
+  summary=$(grep -E '^(WARN|FAIL)' "$out" | head -6)
+  ls -1 "$REPORTS"/*.md 2>/dev/null | head -n -30 | xargs -r rm -f
+  echo "wrote $out"
+  if [[ "${1:-}" == "--notify" && -n "$summary" ]] && have notify-send; then
+    local urgency=normal; grep -q '^FAIL' <<<"$summary" && urgency=critical
+    notify-send -u "$urgency" -i "$REPO/docs/icon.png" "Laptop doctor" "$summary"
+  fi
+}
+
+case "${1:-}" in
+  check) cmd_check ;;
+  crashes) cmd_crashes "${2:-7}" ;;
+  clean) cmd_clean "${2:-}" ;;
+  updates) cmd_updates ;;
+  report) cmd_report "${2:-}" ;;
+  snapshot) bash "$MACHINE_DOCS/scan.sh" ;;
+  *) usage ;;
+esac

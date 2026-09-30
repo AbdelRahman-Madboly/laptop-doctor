@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the laptop doctor every morning and 5 minutes after login
+
+[Timer]
+OnCalendar=*-*-* 09:30
+OnStartupSec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

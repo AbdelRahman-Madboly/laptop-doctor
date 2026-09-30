@@ -1,0 +1,2 @@
+# ports expected to listen on all interfaces: port  reason
+8765  netusage phone app (ufw: LAN only)
