@@ -88,8 +88,12 @@ def gpu_query() -> tuple[str, dict]:
         return "driver/library mismatch: reboot needed before CUDA works", {}
     if re.search(r"failed|error", out, re.I) or not out:
         return out.splitlines()[0] if out else "no output", {}
-    vals = [v.strip() for v in out.splitlines()[0].split(",")]
-    return "", dict(zip(keys, vals))
+    # A wedged GPU answers "[N/A]" for live fields; blank them so callers can float() safely.
+    vals = ["" if "N/A" in v else v.strip() for v in out.splitlines()[0].split(",")]
+    g = dict(zip(keys, vals))
+    if not g.get("utilization.gpu") and not g.get("temperature.gpu"):
+        return "GPU not responding (nvidia-smi reports N/A): reboot to recover", {}
+    return "", g
 
 
 def check_gpu() -> Check:
@@ -144,8 +148,10 @@ def check_errors() -> Check:
 def check_crashes() -> Check:
     week = time.time() - 7 * 86400
     crash_files = [f for f in glob.glob("/var/crash/*.crash") if os.path.getmtime(f) > week]
-    kern = run(["journalctl", "-k", "--since", "-7d", "--no-pager", "-q"], timeout=30)
-    oom = kern.count("Killed process")
+    # -k means the current boot only; _TRANSPORT=kernel spans every boot in the window.
+    kern = run(["journalctl", "_TRANSPORT=kernel", "--since", "-7d", "--no-pager", "-q"], timeout=30)
+    oomd = run(["journalctl", "-t", "systemd-oomd", "--since", "-7d", "--no-pager", "-q"], timeout=30)
+    oom = kern.count("Killed process") + len(re.findall(r"^\S+ \S+ \S+ \S+ systemd-oomd\[\d+\]: Killed ", oomd, re.M))
     last = run(["last", "-x"]).splitlines()
     unclean = max(0, sum(1 for line in last if line.startswith("reboot")
                          and ("still running" in line or "crash" in line)) - 1)

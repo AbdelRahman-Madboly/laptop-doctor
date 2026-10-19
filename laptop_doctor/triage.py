@@ -30,7 +30,8 @@ def crashes(days: int = 7) -> list[Section]:
     out.append((f"Crash reports in /var/crash (last {days}d)",
                 [f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(t))}  {Path(f).name}" for t, f in files]))
 
-    kern = run(["journalctl", "-k", "--since", since, "--no-pager", "-q", "-o", "short"], timeout=60)
+    # -k means the current boot only; _TRANSPORT=kernel spans every boot in the window.
+    kern = run(["journalctl", "_TRANSPORT=kernel", "--since", since, "--no-pager", "-q", "-o", "short"], timeout=60)
     pat = re.compile(r"out of memory|oom-kill|NVRM: Xid|hung_task|soft lockup|BUG:|Oops|segfault|"
                      r"I/O error|nvme.*(timeout|reset)", re.I)
     out.append((f"Kernel: errors, OOM, GPU Xid, hung tasks, soft lockups (last {days}d)",
