@@ -5,11 +5,13 @@ import os
 import re
 import time
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import psutil
 
+from . import cleanup
 from .util import REPO, have, read, run, uptime_text
 
 # thresholds
@@ -58,22 +60,45 @@ def check_disk() -> Check:
     return Check("disk", OK, msg)
 
 
-def top_memory(n: int = 3):
+def group_by_app(procs, n: int) -> list[tuple[int, str, int]]:
+    """(rss, name) per process -> (total rss, name, process count) per app, largest first.
+    Shared pages are counted once per process, so a many-process app like Chrome reads a little high."""
+    total, count = Counter(), Counter()
+    for rss, name in procs:
+        total[name] += rss
+        count[name] += 1
+    return [(rss, name, count[name]) for name, rss in total.most_common(n)]
+
+
+def top_memory(n: int = 3) -> list[tuple[int, str, int]]:
     procs = []
     for p in psutil.process_iter(["name", "memory_info"]):
         mi = p.info.get("memory_info")
         if mi:
             procs.append((mi.rss, p.info["name"] or "?"))
-    return sorted(procs, reverse=True)[:n]
+    return group_by_app(procs, n)
+
+
+def app_label(name: str, count: int) -> str:
+    return f"{name} x{count}" if count > 1 else name
+
+
+def memory_fix(top) -> str:
+    if cleanup.gradle_daemons():
+        return "Optimize > stop idle Gradle/Kotlin daemons"
+    if top:
+        return f"close or restart {top[0][1]}, the largest user (Monitor page)"
+    return ""
 
 
 def check_memory() -> Check:
     vm, sw = psutil.virtual_memory(), psutil.swap_memory()
     swap_mb = sw.used // 2**20
-    top = ", ".join(f"{name} {rss / 2**30:.1f}G" for rss, name in top_memory())
+    apps = top_memory()
+    top = ", ".join(f"{app_label(name, count)} {rss / 2**30:.1f}G" for rss, name, count in apps)
     msg = f"{vm.available // 2**20}M available, swap {swap_mb}M used; top: {top}"
     if swap_mb > SWAP_WARN_MB:
-        return Check("memory", WARN, msg, "Optimize > stop idle Gradle/Kotlin daemons")
+        return Check("memory", WARN, msg, memory_fix(apps))
     return Check("memory", OK, msg)
 
 
@@ -145,17 +170,61 @@ def check_errors() -> Check:
                  "Crashes page / journalctl -p 3 -b" if len(lines) > ERRORS_WARN else "")
 
 
+@dataclass
+class OomKill:
+    when: str     # "Oct 26 16:04"
+    name: str
+    rss: int      # bytes the killed process held
+    origin: str   # what started it: terminal, Chrome, a service, ...
+
+
+_KILLED = re.compile(r"^(\w+ +\d+ \d+:\d+):\d+ .*Killed process (\d+) \((.*)\) total-vm:\d+kB, anon-rss:(\d+)kB")
+_MEMCG = re.compile(r"task_memcg=(\S+?),task=.*,pid=(\d+),")
+
+
+def _origin(memcg: str) -> str:
+    if "Terminal" in memcg or "vte-spawn" in memcg:
+        return "terminal"
+    if "chrome" in memcg:
+        return "Chrome"
+    if "code" in memcg.lower():
+        return "VS Code"
+    if memcg.endswith(".service"):
+        return memcg.rsplit("/", 1)[-1].removesuffix(".service")
+    return "desktop app"
+
+
+def oom_kills(kernel_log: str) -> list[OomKill]:
+    """Kernel OOM-killer victims from journal text, newest first."""
+    origins, kills = {}, []
+    for line in kernel_log.splitlines():
+        if m := _MEMCG.search(line):
+            origins[m.group(2)] = _origin(m.group(1))
+        elif m := _KILLED.search(line):
+            when, pid, name, rss_kb = m.groups()
+            kills.append(OomKill(" ".join(when.split()), name, int(rss_kb) * 1024, origins.get(pid, "unknown")))
+    # a leap year, so Feb 29 parses; the journal line has no year of its own
+    return sorted(kills, key=lambda k: time.strptime(f"2000 {k.when}", "%Y %b %d %H:%M"), reverse=True)
+
+
+def oom_summary(kills: list[OomKill], n: int = 3) -> str:
+    return ", ".join(f"{k.name} {k.rss / 2**30:.1f}G" for k in sorted(kills, key=lambda k: -k.rss)[:n])
+
+
 def check_crashes() -> Check:
     week = time.time() - 7 * 86400
     crash_files = [f for f in glob.glob("/var/crash/*.crash") if os.path.getmtime(f) > week]
     # -k means the current boot only; _TRANSPORT=kernel spans every boot in the window.
     kern = run(["journalctl", "_TRANSPORT=kernel", "--since", "-7d", "--no-pager", "-q"], timeout=30)
     oomd = run(["journalctl", "-t", "systemd-oomd", "--since", "-7d", "--no-pager", "-q"], timeout=30)
-    oom = kern.count("Killed process") + len(re.findall(r"^\S+ \S+ \S+ \S+ systemd-oomd\[\d+\]: Killed ", oomd, re.M))
+    kills = oom_kills(kern)
+    oom = len(kills) + len(re.findall(r"^\S+ \S+ \S+ \S+ systemd-oomd\[\d+\]: Killed ", oomd, re.M))
     last = run(["last", "-x"]).splitlines()
     unclean = max(0, sum(1 for line in last if line.startswith("reboot")
                          and ("still running" in line or "crash" in line)) - 1)
     msg = f"last 7d: {len(crash_files)} crash report(s), {oom} OOM kill(s); unclean boots in wtmp: {unclean}"
+    if kills:
+        msg += f"; biggest killed: {oom_summary(kills)}"
     if crash_files or oom:
         return Check("crashes", WARN, msg, "laptop crashes")
     return Check("crashes", OK, msg)
@@ -286,15 +355,20 @@ class Summary:
         return max(0, 100 - 6 * self.warns - 18 * self.fails)
 
 
+def _safe(fn) -> Check | None:
+    try:
+        return fn()
+    except Exception as e:  # a broken check must not hide the others
+        return Check(fn.__name__.removeprefix("check_"), WARN, f"check failed: {e}")
+
+
 def run_all(progress=None) -> Summary:
+    """Run every check side by side (the updates check alone waits seconds on the network); keep ALL's order."""
     out = Summary()
-    for i, fn in enumerate(ALL):
-        try:
-            c = fn()
-        except Exception as e:  # a broken check must not hide the others
-            c = Check(fn.__name__.removeprefix("check_"), WARN, f"check failed: {e}")
-        if c:
-            out.checks.append(c)
-        if progress:
-            progress(i + 1, len(ALL))
+    with ThreadPoolExecutor(max_workers=len(ALL)) as pool:
+        futures = [pool.submit(_safe, fn) for fn in ALL]
+        for done, _ in enumerate(as_completed(futures), 1):
+            if progress:
+                progress(done, len(ALL))
+    out.checks = [c for c in (f.result() for f in futures) if c]
     return out

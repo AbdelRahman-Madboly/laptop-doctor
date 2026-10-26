@@ -33,7 +33,15 @@ class Task(QRunnable):
             self.signals.failed.connect(on_fail)
         if on_progress:
             self.signals.progress.connect(on_progress)
-        self.setAutoDelete(True)
+        # Released on the GUI thread once the last signal has been delivered. Dropping the last reference in
+        # run() freed the signals object on the worker thread with its queued signal still pending, which
+        # crashed the app inside Qt (segfaults on 2026-10-21 and 2026-10-23).
+        self.signals.done.connect(self._release)
+        self.signals.failed.connect(self._release)
+        self.setAutoDelete(False)   # Python owns it; the pool must not delete it from the worker thread
+
+    def _release(self, _=None):
+        Task._alive.discard(self)
 
     def run(self):
         try:
@@ -43,8 +51,6 @@ class Task(QRunnable):
             self._emit(self.signals.failed, traceback.format_exc(limit=3))
         else:
             self._emit(self.signals.done, result)
-        finally:
-            Task._alive.discard(self)
 
     @staticmethod
     def _emit(sig, value):

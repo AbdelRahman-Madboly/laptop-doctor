@@ -6,7 +6,7 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QCheckBox, QGridLayout, QMessageBox, QWidget
 
 from ... import cleanup
-from ...checks import top_memory
+from ...checks import app_label, top_memory
 from ...util import HOME, human
 from ..widgets import (Card, PageHeader, Pill, UsageBar, button, clear_layout, copy_button, hbox, label, run_async,
                        scroll, vbox)
@@ -102,10 +102,11 @@ class OptimizePage(QWidget):
     def _update_mem(self):
         clear_layout(self.mem_list)
         vm = psutil.virtual_memory()
-        for rss, name in top_memory(6):
+        for rss, name, count in top_memory(6):
             bar = UsageBar(height=6, color="blue")
             bar.set(rss * 100 / vm.total)
-            self.mem_list.addLayout(vbox(hbox(label(name), None, label(human(rss), "faint")), bar, spacing=4))
+            self.mem_list.addLayout(vbox(hbox(label(app_label(name, count)), None, label(human(rss), "faint")),
+                                         bar, spacing=4))
         gd = cleanup.gradle_daemons()
         if gd:
             self.mem_list.addWidget(label(f"{len(gd)} Gradle/Kotlin daemon(s) idle: tick them under Safe to clear.",

@@ -6,7 +6,8 @@ import re
 import time
 from pathlib import Path
 
-from .util import HOME, have, read, run
+from .checks import oom_kills
+from .util import HOME, have, human, read, run
 
 Section = tuple[str, list[str]]
 
@@ -15,14 +16,28 @@ def _tail(lines: list[str], n: int) -> list[str]:
     return lines[-n:] if len(lines) > n else lines
 
 
+KERNEL_PROBLEM = re.compile(r"out of memory|NVRM: Xid|hung_task|soft lockup|BUG:|\bOops\b|segfault|"
+                            r"I/O error|nvme.*(timeout|reset)", re.I)
+# OOM kills get their own section; these are the noisy lines around each one (the process table dump)
+OOM_NOISE = re.compile(r"Out of memory: Killed process|invoked oom-killer|oom-kill:|^\S+ +\d+ \S+ \S+ kernel: \[ *\d+\]")
+
+
+def boots(n: int = 10) -> list[str]:
+    # name the record types: without them the newest 20 lines are usually terminal logins
+    return [line for line in run(["last", "-x", "-n", str(n), "reboot", "shutdown"]).splitlines()
+            if line.startswith(("reboot", "shutdown"))]
+
+
+def kernel_problems(kernel_log: str) -> list[str]:
+    return [line for line in kernel_log.splitlines() if KERNEL_PROBLEM.search(line) and not OOM_NOISE.search(line)]
+
+
 def crashes(days: int = 7) -> list[Section]:
     since = f"-{days}d"
     out: list[Section] = []
 
-    boots = [line for line in run(["last", "-x", "-n", "20"]).splitlines()
-             if line.startswith(("reboot", "shutdown"))][:10]
     out.append(("Boots (last 10; a reboot line with 'crash' or a gap without shutdown means an unclean stop)",
-                boots))
+                boots()))
 
     cutoff = time.time() - days * 86400
     files = sorted(((os.path.getmtime(f), f) for f in glob.glob("/var/crash/*.crash")
@@ -32,10 +47,11 @@ def crashes(days: int = 7) -> list[Section]:
 
     # -k means the current boot only; _TRANSPORT=kernel spans every boot in the window.
     kern = run(["journalctl", "_TRANSPORT=kernel", "--since", since, "--no-pager", "-q", "-o", "short"], timeout=60)
-    pat = re.compile(r"out of memory|oom-kill|NVRM: Xid|hung_task|soft lockup|BUG:|Oops|segfault|"
-                     r"I/O error|nvme.*(timeout|reset)", re.I)
-    out.append((f"Kernel: errors, OOM, GPU Xid, hung tasks, soft lockups (last {days}d)",
-                _tail([line for line in kern.splitlines() if pat.search(line)], 25)))
+    out.append((f"Out-of-memory kills (last {days}d; newest first, size is what the process held)",
+                [f"{k.when}  {k.name:<16} {human(k.rss):>9}  started from {k.origin}"
+                 for k in oom_kills(kern)[:15]]))
+    out.append((f"Kernel: errors, GPU Xid and memory failures, hung tasks, soft lockups (last {days}d)",
+                _tail(kernel_problems(kern), 25)))
 
     prev = run(["journalctl", "-b", "-1", "-p", "3", "--no-pager", "-q", "-o", "short"], timeout=60)
     out.append(("Previous boot: last error-level lines (what happened before the last stop)",
