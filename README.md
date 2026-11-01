@@ -8,6 +8,9 @@ Read-only by default. The only things it changes are user-level caches you tick 
 (or `laptop clean --apply`) and processes you end from the Monitor page. Root-level fixes are shown
 as commands for you to run, never run for you.
 
+Status: v2.0.0, finished personal tool. The tray app, the `laptop` command and the daily timer run
+on this laptop; 41 tests pass (`uv run pytest`).
+
 ## Install
 
 ```
@@ -70,6 +73,25 @@ assets/        app and tray icons (SVG)
 packaging/     install.sh, icon renderer
 tests/         uv run pytest
 ```
+
+## Tests
+
+```
+uv run pytest
+```
+
+Most checks are tested with canned command output, so they pass on any machine. One test runs
+every check against the real machine and only asserts that each returns a known status.
+
+## What it does not do
+
+- It does not run anything as root. Fixes that need `sudo` are shown as commands to copy.
+- It does not install updates. The Updates page lists what is pending.
+- It does not delete files outside user-level caches, and only the ones ticked on the Optimize
+  page or cleared by `laptop clean --apply`.
+- It is written for this one laptop (Dell G15 5530, Ubuntu 24.04, NVIDIA GPU). Some checks,
+  such as the `nightly-backup` timer and the machine record in `~/machine-notes`, assume this setup.
+- It does not upload anything. Reports stay in `reports/` and are not committed.
 
 Settings and check history live in `~/.config/laptop-doctor/`. The machine record (current state,
 numbered issues, changelog, reinstall playbook) lives in `~/machine-notes/`.
