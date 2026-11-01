@@ -13,7 +13,7 @@ from typing import Callable
 
 import psutil
 
-from .util import HOME, dir_size, have, human, run
+from .util import HOME, dir_size, have, human, run, user_config
 
 SAFE, REVIEW, SUDO = "safe", "review", "sudo"
 
@@ -51,9 +51,15 @@ def _swap_of(p: psutil.Process) -> int:
     return 0
 
 
-def stale_plugin_versions() -> list[Path]:
-    """Editor assistant plugin cache dirs no longer referenced by installed_plugins.json."""
-    home = HOME / ".assistant/plugins"
+def stale_plugin_versions(root: str | None = None) -> list[Path]:
+    """Plugin cache dirs of an editor or assistant tool that its installed_plugins.json no
+    longer references. The tool's plugin folder comes from `plugin_cache_root` in config.json
+    (layout: installed_plugins.json plus cache/<marketplace>/<plugin>/<version>/); unset means
+    nothing is reported."""
+    root = root or user_config().get("plugin_cache_root")
+    if not root:
+        return []
+    home = Path(str(root)).expanduser()
     try:
         data = json.loads((home / "installed_plugins.json").read_text())
         keep = {Path(e["installPath"]).resolve() for v in data["plugins"].values() for e in v}
@@ -78,6 +84,25 @@ def _docker_reclaimable() -> str:
     return ", ".join(line for line in out.splitlines() if line.startswith(("Images", "Build")))
 
 
+DEFAULT_REVIEW = [
+    ("trash", "Trash", "~/.local/share/Trash"),
+    ("downloads", "Downloads", "~/Downloads"),
+    ("huggingface", "HuggingFace models", "~/.cache/huggingface"),
+    ("conda", "Conda packages (conda clean --all)", "~/miniconda3/pkgs"),
+]
+
+
+def review_paths(config: dict | None = None) -> list[tuple[str, str, str]]:
+    """Folders shown for review: the defaults, then `review_paths` from config.json as
+    [title, path] pairs (editor and assistant caches, model stores and the like)."""
+    config = user_config() if config is None else config
+    extra = []
+    for i, entry in enumerate(config.get("review_paths") or []):
+        if isinstance(entry, (list, tuple)) and len(entry) == 2:
+            extra.append((f"user{i}", str(entry[0]), str(entry[1])))
+    return DEFAULT_REVIEW + extra
+
+
 def scan(progress: Callable[[str], None] | None = None) -> list[Item]:
     def step(label):
         if progress:
@@ -93,21 +118,15 @@ def scan(progress: Callable[[str], None] | None = None) -> list[Item]:
     items.append(Item("gradle", "Idle Gradle/Kotlin daemons", SAFE, sum(_swap_of(p) for p in daemons),
                       f"{len(daemons)} running; size is swap they hold, they restart on next build"))
     stale = stale_plugin_versions()
-    items.append(Item("plugins", "Old Assistant plugin versions", SAFE, sum(dir_size(p) for p in stale),
-                      f"{len(stale)} unreferenced version folder(s)"))
+    if stale:
+        items.append(Item("plugins", "Old editor and assistant plugin versions", SAFE,
+                          sum(dir_size(p) for p in stale), f"{len(stale)} unreferenced version folder(s)"))
     dk = _docker_reclaimable()
     if dk:
         items.append(Item("docker", "Docker dangling images + build cache", SAFE, -1, dk))
 
     step("large folders")
-    for key, title, path in [
-        ("trash", "Trash", "~/.local/share/Trash"),
-        ("downloads", "Downloads", "~/Downloads"),
-        ("huggingface", "HuggingFace models", "~/.cache/huggingface"),
-        ("conda", "Conda packages (conda clean --all)", "~/miniconda3/pkgs"),
-        ("local-llm", "Local model files", "~/.local-models"),
-        ("transcripts", "Assistant session transcripts", "~/.assistant/projects"),
-    ]:
+    for key, title, path in review_paths():
         size = dir_size(path)
         if size:
             items.append(Item(key, title, REVIEW, size, path, path=str(Path(path).expanduser())))

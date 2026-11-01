@@ -1,15 +1,19 @@
 # Laptop Doctor
 
-Health checks, live system monitor, cleanup, crash triage, update tracking and daily reports for the
-Dell G15 5530 (Ubuntu 24.04). A desktop app that lives in the tray and keeps checking in the
+Health checks, live system monitor, cleanup, crash triage, update tracking and daily reports for an
+Ubuntu laptop. Written on a Dell G15 5530 (Ubuntu 24.04, NVIDIA GPU). A desktop app that lives in the tray and keeps checking in the
 background, plus the `laptop` command for the terminal.
 
 Read-only by default. The only things it changes are user-level caches you tick on the Optimize page
 (or `laptop clean --apply`) and processes you end from the Monitor page. Root-level fixes are shown
 as commands for you to run, never run for you.
 
-Status: v2.0.0, finished personal tool. The tray app, the `laptop` command and the daily timer run
-on this laptop; 41 tests pass (`uv run pytest`).
+## Status
+
+v2.0.0 plus the unreleased changes in CHANGELOG.md. Built as a personal tool and used daily on one
+laptop, where the tray app, the `laptop` command and the daily timer run; 45 tests pass (`uv run
+pytest`). Other hardware should work for the generic checks, but the GPU checks assume an NVIDIA
+card with `nvidia-smi` and the thresholds were tuned on one machine.
 
 ## Install
 
@@ -50,12 +54,26 @@ laptop crashes [days]   boots, crash files, OOM kills, GPU Xid, lockups, previou
 laptop clean [--apply]  reclaimable space; --apply clears safe user caches and idle Gradle/Kotlin daemons
 laptop updates          apt, snap, flatpak, toolchains, npm globals
 laptop report [--notify] writes reports/YYYY-MM-DD.md (last 30 kept, not committed)
-laptop snapshot         full software inventory (machine-notes/scan.sh)
+laptop snapshot         run scan.sh from notes_dir (see Configuration)
 ```
 
-`systemd/laptop-doctor.timer` (installed to `~/.config/systemd/user/`) still runs
+`systemd/laptop-doctor.timer`, once copied with its service to `~/.config/systemd/user/` and
+enabled (`systemctl --user enable --now laptop-doctor.timer`), runs
 `laptop report --notify` at 09:30 and 5 minutes after login, so reports keep coming when the app is
 not running. When the tray app is up it skips its own notification to avoid doubles.
+
+## Configuration
+
+Everything machine-specific is optional and lives in `~/.config/laptop-doctor/config.json`;
+`config.example.json` shows the format. A missing key turns that feature off.
+
+| Key | What it does |
+|---|---|
+| `notes_dir` | folder with your machine notes and a `scan.sh` that `laptop snapshot` runs |
+| `backup_unit` | systemd user unit whose last result the Backups check reports |
+| `plugin_cache_root` | plugin folder of an editor or assistant tool (`installed_plugins.json` plus `cache/`); unreferenced versions are offered for cleanup |
+| `review_paths` | extra `[title, path]` folders shown for review on the Optimize page, such as editor and assistant caches or model stores |
+| `toolchain_versions` | extra `[name, command, args...]` rows on the Updates page |
 
 ## Layout
 
@@ -89,10 +107,13 @@ every check against the real machine and only asserts that each returns a known 
 - It does not install updates. The Updates page lists what is pending.
 - It does not delete files outside user-level caches, and only the ones ticked on the Optimize
   page or cleared by `laptop clean --apply`.
-- It is written for this one laptop (Dell G15 5530, Ubuntu 24.04, NVIDIA GPU). Some checks,
-  such as the `nightly-backup` timer and the machine record in `~/machine-notes`, assume this setup.
+- It is written for Ubuntu with systemd and tested on one laptop with an NVIDIA GPU. It has no
+  support for other distributions, AMD or Intel GPU monitoring, or macOS.
 - It does not upload anything. Reports stay in `reports/` and are not committed.
 
-Settings and check history live in `~/.config/laptop-doctor/`. The machine record (current state,
-numbered issues, changelog, reinstall playbook) lives in `~/machine-notes/`.
+Settings and check history live in `~/.config/laptop-doctor/`.
 `known-ports`: services that are meant to listen on all interfaces.
+
+## License
+
+MIT, see [LICENSE](LICENSE).

@@ -78,7 +78,43 @@ def test_few_journal_errors_are_fine(monkeypatch):
 ])
 def test_backups(monkeypatch, result, last, status):
     monkeypatch.setattr(checks, "run", fake_run({"-p Result": result, "ExecMainExitTimestamp": last}))
-    assert checks.check_backups().status == status
+    assert checks.check_backups("my-backup").status == status
+
+
+def test_backups_without_a_configured_unit_are_ok(monkeypatch):
+    monkeypatch.setattr(checks, "user_config", lambda: {})
+    c = checks.check_backups()
+    assert c.status == checks.OK and "no backup unit configured" in c.message
+
+
+def test_backup_unit_comes_from_config(monkeypatch):
+    seen = []
+    monkeypatch.setattr(checks, "user_config", lambda: {"backup_unit": "nightly.service"})
+    monkeypatch.setattr(checks, "run", lambda args, **k: seen.append(args) or "success")
+    assert checks.check_backups().message.startswith("nightly ok")
+    assert "nightly.service" in seen[0]
+
+
+def test_review_paths_add_configured_folders():
+    from laptop_doctor import cleanup
+    paths = cleanup.review_paths({"review_paths": [["Model store", "~/models"], "bad"]})
+    assert paths[:len(cleanup.DEFAULT_REVIEW)] == cleanup.DEFAULT_REVIEW
+    assert paths[-1] == ("user0", "Model store", "~/models")
+    assert cleanup.review_paths({}) == cleanup.DEFAULT_REVIEW
+
+
+def test_plugin_cache_is_off_until_configured(tmp_path, monkeypatch):
+    from laptop_doctor import cleanup
+    monkeypatch.setattr(cleanup, "user_config", lambda: {})
+    assert cleanup.stale_plugin_versions() == []
+    root = tmp_path / "plugins"
+    keep = root / "cache/market/tool/2.0"
+    old = root / "cache/market/tool/1.0"
+    keep.mkdir(parents=True)
+    old.mkdir(parents=True)
+    (root / "installed_plugins.json").write_text(
+        '{"plugins": {"tool": [{"installPath": "%s"}]}}' % keep)
+    assert cleanup.stale_plugin_versions(str(root)) == [old]
 
 
 def test_known_ports_file_is_parsed(tmp_path, monkeypatch):

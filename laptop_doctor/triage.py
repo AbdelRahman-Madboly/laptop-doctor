@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 from .checks import oom_kills
-from .util import HOME, have, human, read, run
+from .util import HOME, have, human, read, run, user_config
 
 Section = tuple[str, list[str]]
 
@@ -89,20 +89,22 @@ def updates() -> list[Section]:
     cache = time.strftime("%Y-%m-%d", time.localtime(stamp.stat().st_mtime)) if stamp.exists() else "unknown"
     out.append((f"apt ({len(apt)} pending; cache as of {cache})",
                 apt[:60] + ["apply: sudo apt update && sudo apt full-upgrade   "
-                            "(watch nvidia-* and linux-* lines: check driver and kernel notes first)"]))
+                            "(watch nvidia-* and linux-* lines: driver and kernel updates)"]))
     out.append(("snap", run(["snap", "refresh", "--list"], timeout=30).splitlines()))
     if have("flatpak"):
         out.append(("flatpak", run(["flatpak", "remote-ls", "--updates"], timeout=60).splitlines() or ["none"]))
     tools = [
-        ("assistant", _ver(["assistant", "--version"]) + " (auto-updates)"),
         ("node", _ver(["node", "--version"]) + " via nvm"),
         ("fvm", _ver(["fvm", "--version"])),
         ("gh", _ver(["gh", "--version"])),
         ("docker", _ver(["docker", "--version"])),
         ("gitleaks", _ver([str(HOME / "bin/gitleaks"), "version"])),
         ("trivy", _ver([str(HOME / "bin/trivy"), "--version"])),
-        ("local-llm", _ver(["local-llm", "--version"], line=-1)),
     ]
+    # extra tools from config.json: [name, command, args...]
+    for entry in user_config().get("toolchain_versions") or []:
+        if isinstance(entry, list) and len(entry) >= 2:
+            tools.append((str(entry[0]), _ver([str(a) for a in entry[1:]])))
     out.append(("Toolchains", [f"{name:<10} {v}" for name, v in tools]))
     npm = run(["npm", "outdated", "-g", "--depth=0"], timeout=60) if have("npm") else ""
     out.append(("npm globals outdated", npm.splitlines() or ["none"]))

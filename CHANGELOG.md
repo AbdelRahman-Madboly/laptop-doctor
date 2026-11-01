@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- Machine-specific settings moved to an optional `~/.config/laptop-doctor/config.json`
+  (`config.example.json`): the notes folder for `laptop snapshot`, the backup unit, an editor or
+  assistant plugin cache, extra review folders and extra toolchain versions. Nothing is assumed
+  when a key is missing.
+- The daily service runs `laptop` from `~/.local/bin`, where the installer links it.
+- Released under the MIT license with the author's full name; CI runs the tests.
+
 ## v2.0.0 - 2026-11-01
 
 First tagged release. The version number follows `pyproject.toml`, which counts the desktop app

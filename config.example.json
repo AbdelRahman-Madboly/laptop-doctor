@@ -1,0 +1,12 @@
+{
+  "notes_dir": "~/machine-notes",
+  "backup_unit": "nightly-backup",
+  "plugin_cache_root": "~/.example-editor/plugins",
+  "review_paths": [
+    ["Editor and assistant caches", "~/.example-editor/cache"],
+    ["Local model files", "~/models"]
+  ],
+  "toolchain_versions": [
+    ["rustc", "rustc", "--version"]
+  ]
+}

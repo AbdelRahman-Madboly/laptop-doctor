@@ -12,7 +12,7 @@ from pathlib import Path
 import psutil
 
 from . import cleanup
-from .util import REPO, have, read, run, uptime_text
+from .util import REPO, have, read, run, uptime_text, user_config
 
 # thresholds
 DISK_WARN, DISK_FAIL = 85, 93
@@ -230,15 +230,20 @@ def check_crashes() -> Check:
     return Check("crashes", OK, msg)
 
 
-def check_backups() -> Check:
-    result = run(["systemctl", "--user", "show", "nightly-backup.service", "-p", "Result", "--value"])
-    last = run(["systemctl", "--user", "show", "nightly-backup.service", "-p", "ExecMainExitTimestamp", "--value"])
+def check_backups(unit: str | None = None) -> Check:
+    """Last result of the user's backup unit, named by `backup_unit` in config.json."""
+    unit = unit or user_config().get("backup_unit")
+    if not unit:
+        return Check("backups", OK, "no backup unit configured (backup_unit in config.json)")
+    unit = str(unit).removesuffix(".service")
+    result = run(["systemctl", "--user", "show", f"{unit}.service", "-p", "Result", "--value"])
+    last = run(["systemctl", "--user", "show", f"{unit}.service", "-p", "ExecMainExitTimestamp", "--value"])
     if not last:
-        return Check("backups", WARN, "nightly-backup has not run since login")
+        return Check("backups", WARN, f"{unit} has not run since login")
     if result != "success":
-        return Check("backups", FAIL, f"nightly-backup last result: {result} ({last})",
-                     "journalctl --user -u nightly-backup")
-    return Check("backups", OK, f"nightly-backup ok ({last})")
+        return Check("backups", FAIL, f"{unit} last result: {result} ({last})",
+                     f"journalctl --user -u {unit}")
+    return Check("backups", OK, f"{unit} ok ({last})")
 
 
 def known_ports() -> set[int]:

@@ -7,7 +7,7 @@ import sys
 import psutil
 
 from . import checks, cleanup, report, triage
-from .util import MACHINE_DOCS, human
+from .util import human, notes_dir
 
 USAGE = """laptop <command>
 
@@ -18,7 +18,7 @@ USAGE = """laptop <command>
   clean           show what can be reclaimed; 'clean --apply' clears safe user-level caches only
   updates         list pending updates across apt, snap, flatpak, toolchains
   report          write check + crashes to reports/YYYY-MM-DD.md; '--notify' pops a desktop notice on problems
-  snapshot        run the full software inventory scan (machine-notes/scan.sh)
+  snapshot        run scan.sh from notes_dir in config.json, if set
 """
 
 
@@ -102,7 +102,11 @@ def main(argv: list[str]) -> int:
     if cmd == "report":
         return cmd_report(arg == "--notify")
     if cmd == "snapshot":
-        return subprocess.call(["bash", str(MACHINE_DOCS / "scan.sh")])
+        notes = notes_dir()
+        if not notes or not (notes / "scan.sh").exists():
+            print("snapshot: set notes_dir in ~/.config/laptop-doctor/config.json to a folder with scan.sh")
+            return 1
+        return subprocess.call(["bash", str(notes / "scan.sh")])
     print(USAGE)
     return 0 if cmd in ("-h", "--help", "help") else 64
 

@@ -1,5 +1,6 @@
 """Small helpers shared by the checks, the CLI and the dashboard."""
 
+import json
 import os
 import shutil
 import subprocess
@@ -7,11 +8,27 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 HOME = Path.home()
-MACHINE_DOCS = HOME / "machine-notes"
 REPORTS = REPO / "reports"
 ICON = REPO / "assets/laptop-doctor.svg"
 ICON_PNG = REPO / "docs/icon.png"
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config")) / "laptop-doctor"
+# Optional machine-specific settings; see config.example.json. Missing keys turn features off.
+USER_CONFIG = CONFIG_DIR / "config.json"
+
+
+def user_config() -> dict:
+    """The user's config.json as a dict; empty when missing or unreadable."""
+    try:
+        data = json.loads(USER_CONFIG.read_text())
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def notes_dir() -> Path | None:
+    """Folder with the user's machine notes and scan.sh, if configured."""
+    raw = user_config().get("notes_dir")
+    return Path(str(raw)).expanduser() if raw else None
 
 
 def have(cmd: str) -> bool:
