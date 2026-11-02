@@ -1,5 +1,7 @@
 # Laptop Doctor
 
+<img src="docs/readme-icon.png" width="96" align="right" alt="Laptop Doctor icon">
+
 Health checks, live system monitor, cleanup, crash triage, update tracking and daily reports for an
 Ubuntu laptop. Written on a Dell G15 5530 (Ubuntu 24.04, NVIDIA GPU). A desktop app that lives in the tray and keeps checking in the
 background, plus the `laptop` command for the terminal.
@@ -117,3 +119,7 @@ Settings and check history live in `~/.config/laptop-doctor/`.
 ## License
 
 MIT, see [LICENSE](LICENSE).
+
+## Author
+
+Designed and built by Abdel Rahman Mohamad EL-Sayed ([AbdelRahman-Madboly](https://github.com/AbdelRahman-Madboly) on GitHub).
