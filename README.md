@@ -43,6 +43,10 @@ background, plus the `laptop` command for the terminal. It was written on a Dell
   not running.
 - **Same checks in the terminal.** `laptop check` prints a one-screen OK/WARN/FAIL summary.
 
+<img src="docs/concept-desk.jpg" width="640" alt="laptop-doctor on a laptop">
+
+<sub>Concept image of the app on a laptop. The screen shows the real screenshot above.</sub>
+
 ## How it works
 
 ```mermaid
