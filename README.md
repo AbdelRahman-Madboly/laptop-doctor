@@ -16,6 +16,8 @@
 
 [How it works](#how-it-works) · [Install](#install) · [The app](#the-app) · [Terminal](#terminal) · [What it does not do](#what-it-does-not-do)
 
+<img src="docs/screenshots/01-overview.png" width="760" alt="laptop-doctor: Overview">
+
 </div>
 
 ## Why Laptop Doctor
@@ -56,6 +58,14 @@ flowchart LR
 
 Every check only reads. Changes happen only when you ask for them: clearing the user-level caches
 you ticked, or ending a process from the Monitor page.
+
+## Screenshots
+
+| Live monitor | Health checks |
+|---|---|
+| ![Live monitor](docs/screenshots/02-monitor.png) | ![Health checks](docs/screenshots/03-health.png) |
+
+<sub>Hostname and process list are replaced with demo values in these screenshots.</sub>
 
 ## Status
 
